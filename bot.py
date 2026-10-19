@@ -52,7 +52,7 @@ class CreateTriggerStates(StatesGroup):
     entering_min_amount = State()
     entering_max_amount = State()
     entering_min_order = State()
-    entering_max_order = State()        # ДОДАНО: максимальний ліміт угоди продавця
+    entering_max_order = State()
     entering_interval = State()
     choosing_repeat = State()
     entering_repeat_interval = State()
@@ -65,7 +65,6 @@ class SettingsStates(StatesGroup):
 
 
 # --- КЛАВІАТУРИ --- #
-
 def main_menu_inline_kb() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="📊 Поточний курс", callback_data="menu_rate")],
@@ -103,8 +102,7 @@ def main_menu_reply_kb() -> ReplyKeyboardMarkup:
     )
 
 
-# --- Допоміжні функції для меню --- #
-
+# --- ДОПОМІЖНІ ФУНКЦІЇ --- #
 async def show_main_menu(message: Message):
     await message.answer(
         "Головне меню:",
@@ -122,25 +120,63 @@ async def show_triggers_list(message: Message):
             return
         user_id = row["id"]
 
-    triggers = get_user_triggers(user_id)
+        cur.execute(
+            "SELECT * FROM triggers WHERE user_id=? ORDER BY created_at DESC;",
+            (user_id,),
+        )
+        triggers = cur.fetchall()
+
     if not triggers:
         await message.answer("У вас ще немає тригерів.")
         return
 
-    text = "🔔 Ваші тригери:\n\n"
-    for idx, t in enumerate(triggers, start=1):
-        text += (
-            f"{idx}. {t['name']} "
-            f"(ID: {t['id']}, режим: {t['mode']}, статус: {t['status']})\n"
+    for t in triggers:
+        trigger_id = t["id"]
+        name = t["name"]
+        mode = t["mode"]
+        status = t["status"]
+
+        text = (
+            f"🔔 Тригер ID {trigger_id}\n"
+            f"Назва: {name}\n"
+            f"Режим: {mode}\n"
+            f"Статус: {status}\n"
         )
 
-    text += (
-        "\nЩоб видалити тригер, надішліть команду:\n"
-        "/deltrigger ID\n"
-        "Наприклад: /deltrigger 12"
-    )
+        # Кнопки керування
+        buttons = []
+        # Пауза / відновлення
+        if status == "active":
+            buttons.append(
+                InlineKeyboardButton(
+                    text="⏸ Призупинити", callback_data=f"trg_pause_{trigger_id}"
+                )
+            )
+        elif status == "paused":
+            buttons.append(
+                InlineKeyboardButton(
+                    text="▶️ Відновити", callback_data=f"trg_resume_{trigger_id}"
+                )
+            )
+        elif status == "done":
+            buttons.append(
+                InlineKeyboardButton(
+                    text="▶️ Активувати знову", callback_data=f"trg_resume_{trigger_id}"
+                )
+            )
+        # Видалення
+        buttons.append(
+            InlineKeyboardButton(
+                text="🗑 Видалити", callback_data=f"trg_delete_{trigger_id}"
+            )
+        )
 
-    await message.answer(text)
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                buttons,
+            ]
+        )
+        await message.answer(text, reply_markup=kb)
 
 
 async def show_banks_menu(message: Message):
@@ -294,7 +330,6 @@ async def cb_menu_rate(call: CallbackQuery):
 
 
 # --- REPLY-КНОПКИ ОСНОВНОГО МЕНЮ --- #
-
 @dp.message(F.text == "📊 Поточний курс")
 async def msg_btn_rate(message: Message):
     await cmd_rate(message)
@@ -330,16 +365,16 @@ async def msg_btn_help(message: Message):
     await message.answer(
         "❓ Допомога\n\n"
         "Бот моніторить Binance P2P USDT/UAH (продаж USDT за гривні).\n"
-        "Використовуйте меню (кнопки в повідомленні) або кнопки підказок внизу.\n\n"
-        "Основні функції:\n"
+        "Використовуйте меню (inline) або кнопки внизу (reply-клавіатура).\n\n"
+        "Основні дії:\n"
         "• 📊 Поточний курс — /rate або кнопка\n"
-        "• 🔔 Мої тригери — список ваших тригерів\n"
-        "• ➕ Створити тригер — майстер створення нового\n"
+        "• 🔔 Мої тригери — список та керування тригерами\n"
+        "• ➕ Створити тригер — майстер створення нового тригера\n"
         "• 🏦 Налаштувати банки — вибір банків\n"
         "• ⚙️ Налаштування — глобальні параметри\n"
         "• 📈 Статистика — історія цін за 24 години\n\n"
         "Доступні команди:\n"
-        "/start, /rate, /status, /deltrigger ID."
+        "/start, /rate, /status, /deltrigger ID, /admin."
     )
 
 
@@ -409,7 +444,57 @@ async def cb_menu_triggers(call: CallbackQuery):
     await call.answer()
 
 
-# --- Видалення тригера --- #
+# --- КЕРУВАННЯ ТРИГЕРАМИ: ПАУЗА / ВІДНОВЛЕННЯ / ВИДАЛЕННЯ --- #
+@dp.callback_query(F.data.startswith("trg_pause_"))
+async def cb_trg_pause(call: CallbackQuery):
+    try:
+        trigger_id = int(call.data.split("_", 2)[2])
+    except (IndexError, ValueError):
+        await call.answer("Невірний ID тригера.", show_alert=True)
+        return
+
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE triggers SET status='paused' WHERE id=?;",
+            (trigger_id,),
+        )
+
+    await call.answer(f"Тригер {trigger_id} призупинено.", show_alert=False)
+    await show_triggers_list(call.message)
+
+
+@dp.callback_query(F.data.startswith("trg_resume_"))
+async def cb_trg_resume(call: CallbackQuery):
+    try:
+        trigger_id = int(call.data.split("_", 2)[2])
+    except (IndexError, ValueError):
+        await call.answer("Невірний ID тригера.", show_alert=True)
+        return
+
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE triggers SET status='active' WHERE id=?;",
+            (trigger_id,),
+        )
+
+    await call.answer(f"Тригер {trigger_id} активовано.", show_alert=False)
+    await show_triggers_list(call.message)
+
+
+@dp.callback_query(F.data.startswith("trg_delete_"))
+async def cb_trg_delete(call: CallbackQuery):
+    try:
+        trigger_id = int(call.data.split("_", 2)[2])
+    except (IndexError, ValueError):
+        await call.answer("Невірний ID тригера.", show_alert=True)
+        return
+
+    delete_trigger(trigger_id)
+    await call.answer(f"Тригер {trigger_id} видалено.", show_alert=False)
+    await show_triggers_list(call.message)
+
+
+# --- Видалення тригера командою --- #
 @dp.message(Command("deltrigger"))
 async def cmd_deltrigger(message: Message):
     parts = message.text.split()
@@ -558,7 +643,7 @@ async def msg_set_history_days(message: Message, state: FSMContext):
     await state.clear()
 
 
-# --- Створення тригера (INLINE/REPLY) --- #
+# --- СТВОРЕННЯ ТРИГЕРА (INLINE/REPLY) --- #
 @dp.callback_query(F.data == "menu_create_trigger")
 async def cb_menu_create_trigger(call: CallbackQuery, state: FSMContext):
     await cb_menu_create_trigger_from_message(call.message, state)
@@ -673,7 +758,7 @@ async def cb_threshold_common(call: CallbackQuery, state: FSMContext):
     await state.update_data(common_threshold=True)
     await state.set_state(CreateTriggerStates.entering_threshold_common)
     await call.message.answer(
-        "Введіть цільовий курс (UAH/USDT) для спільного порогу, наприклад: 42.15"
+        "Введіть цільовий курс (UAH/USDT) для спільного порогу, наприклад: 48.80"
     )
     await call.answer()
 
@@ -720,7 +805,7 @@ async def cb_threshold_per_bank(call: CallbackQuery, state: FSMContext):
     for pm_id in selected:
         pm = pms.get(pm_id)
         if pm:
-            text += f"{pm_id} {pm['display_name']}: 42.10\n"
+            text += f"{pm_id} {pm['display_name']}: 48.80\n"
     text += "\nНадішліть список порогів одним повідомленням."
 
     await call.message.answer(text)
@@ -834,7 +919,6 @@ async def msg_min_order(message: Message, state: FSMContext):
 
 @dp.message(CreateTriggerStates.entering_max_order)
 async def msg_max_order(message: Message, state: FSMContext):
-    # НОВИЙ крок – максимальний ліміт угоди продавця
     try:
         value = float(message.text.replace(",", "."))
     except ValueError:
@@ -945,13 +1029,12 @@ async def finalize_trigger(message: Message, state: FSMContext):
         mode=data["mode"],
         common_threshold=data.get("common_threshold", True),
         condition_type=data["condition_type"],
-        # зберігаємо спільний поріг у min_amount_uah для простоти
         min_amount_uah=data.get("threshold_common")
         if data.get("common_threshold", True)
         else None,
         max_amount_uah=data.get("max_amount_uah"),
         min_order_uah=data.get("min_order_uah"),
-        max_order_uah=data.get("max_order_uah"),  # ВАЖЛИВО: пишемо максимум
+        max_order_uah=data.get("max_order_uah"),
         interval_sec=data.get("interval_sec", 60),
         repeat_enabled=data.get("repeat_enabled", False),
         repeat_interval_sec=data.get("repeat_interval_sec"),
@@ -993,6 +1076,42 @@ async def cb_create_cancel(call: CallbackQuery, state: FSMContext):
 async def cb_menu_stats(call: CallbackQuery):
     await show_stats(call.message)
     await call.answer()
+
+
+# --- АДМІН-МЕНЮ --- #
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    # Доступ тільки для ADMIN_IDS
+    if message.chat.id not in config.admin_ids:
+        await message.answer("Доступ заборонено.")
+        return
+
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) as c FROM users;")
+        users_count = cur.fetchone()["c"]
+
+        cur.execute("SELECT COUNT(*) as c FROM triggers;")
+        triggers_count = cur.fetchone()["c"]
+
+        cur.execute(
+            "SELECT * FROM source_errors ORDER BY created_at DESC LIMIT 5;"
+        )
+        errors = cur.fetchall()
+
+    text = (
+        "👨‍💻 Адмін-панель\n\n"
+        f"Користувачів: {users_count}\n"
+        f"Тригерів: {triggers_count}\n\n"
+        "Останні помилки джерела (Binance):\n"
+    )
+    if not errors:
+        text += "— немає помилок за останній час."
+    else:
+        for e in errors:
+            text += f"- [{e['created_at']}] {e['source']}: {e['message'][:80]}\n"
+
+    await message.answer(text)
 
 
 # --- Моніторинг --- #
