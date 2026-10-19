@@ -86,7 +86,7 @@ async def process_trigger(bot: Bot, trigger: TriggerContext):
     except BinanceAPIError:
         return
 
-    # Запис середнього курсу в історію (опціонально, не впливає на тригери)
+    # Лог загальної середньої ціни (опціонально)
     if result.ads:
         avg_price = sum(a.price for a in result.ads) / len(result.ads)
         log_price_history(
@@ -96,7 +96,7 @@ async def process_trigger(bot: Bot, trigger: TriggerContext):
             checked_ads=result.checked,
         )
 
-    # Групування оголошень за payType
+    # Групування оголошень за банком
     ads_by_bank: Dict[str, List] = {}
     for ad in result.ads:
         for pt in ad.payment_types:
@@ -112,10 +112,9 @@ async def process_trigger(bot: Bot, trigger: TriggerContext):
         if not bank_ads:
             continue
 
-        # 1. ФІЛЬТР: ліміти угоди + сума оголошення
+        # ФІЛЬТР: ліміти угоди та інші обмеження
         filtered_ads: List = []
         for ad in bank_ads:
-            # фільтр по мін/макс ліміту угоди продавця
             if (
                 trigger.min_order_uah is not None
                 and ad.min_single_trans_amount < trigger.min_order_uah
@@ -127,31 +126,24 @@ async def process_trigger(bot: Bot, trigger: TriggerContext):
             ):
                 continue
 
-            # фільтр по мін/макс сумі оголошення, якщо ти їх задавав (min_amount_uah, max_amount_uah)
-            # Точне поле "сума оголошення в UAH" у Binance P2P може бути відсутнім,
-            # тому тут при бажанні можна додати додатковий розрахунок (наприклад, available_amount * price),
-            # але в даному шаблоні ми не чіпаємо цю частину.
-            # Якщо min_amount_uah/max_amount_uah у тебе використовуються як технічні поля – можна ігнорувати.
-
+            # За бажанням сюди ж можна додати фільтр за min_amount_uah / max_amount_uah.
             filtered_ads.append(ad)
 
         if not filtered_ads:
             continue
 
-        # 2. ЦІНА: рахуємо current_price ТІЛЬКИ по filtered_ads
+        # Поточна ціна тільки по відфільтрованих оголошеннях
         if trigger.condition_type in ("ge", "cross_up"):
             current_price = max(a.price for a in filtered_ads)
         else:
             current_price = min(a.price for a in filtered_ads)
 
-        # 3. Поріг (threshold)
+        # Поріг
         if bool(bank["use_separate_threshold"]) and bank["threshold_price"] is not None:
             threshold = float(bank["threshold_price"])
         else:
-            # спільний поріг зберігається в min_amount_uah як "цільовий курс" (спрощено)
             threshold = float(trigger.min_amount_uah or 0)
 
-        # 4. Обробка тригерної логіки
         await handle_trigger_logic(
             bot=bot,
             trigger=trigger,
@@ -174,13 +166,13 @@ async def handle_trigger_logic(
     previous_price: Optional[float],
     ads: List,
 ):
-    # Глобальні користувацькі налаштування (вимкнуті сповіщення)
+    # Глобальні налаштування сповіщень користувача
     settings = get_user_settings(trigger.user_id)
     if not settings.get("notifications_enabled", 1):
         set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
         return
 
-    # Постійний тригер
+    # Режим: постійний
     if trigger.mode == "continuous":
         condition_ok = False
         if trigger.condition_type == "ge":
@@ -192,7 +184,7 @@ async def handle_trigger_logic(
             set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
             return
 
-        # Перевірка інтервалу повторних сповіщень
+        # Інтервал повторних сповіщень
         if trigger.repeat_enabled and trigger.repeat_interval_sec:
             last_ntf = get_last_notification_time(trigger.id)
             if last_ntf:
@@ -217,7 +209,7 @@ async def handle_trigger_logic(
         )
         set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
 
-    # Тригер перетину
+    # Режим: перетин
     elif trigger.mode == "cross":
         if previous_price is None:
             set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
@@ -250,7 +242,7 @@ async def handle_trigger_logic(
         )
         set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
 
-    # Разовий тригер
+    # Режим: разовий
     elif trigger.mode == "one_time":
         condition_ok = False
         if trigger.condition_type == "ge":
@@ -290,13 +282,19 @@ async def send_notification(
     threshold: float,
     ads: List,
 ):
-    # Вибираємо реальне "найкраще" оголошення серед уже відфільтрованих
+    # Сортуємо оголошення за ціною відповідно до умови
     if trigger.condition_type in ("ge", "cross_up"):
-        best_ad = max(ads, key=lambda a: a.price)
+        sorted_ads = sorted(ads, key=lambda a: a.price, reverse=True)
     else:
-        best_ad = min(ads, key=lambda a: a.price)
+        sorted_ads = sorted(ads, key=lambda a: a.price)
 
+    # Найкраще оголошення
+    best_ad = sorted_ads[0]
     current_price = best_ad.price
+
+    # Топ-3
+    top_ads = sorted_ads[:3]
+
     total_available = sum(a.available_amount for a in ads)
 
     with get_conn() as conn:
@@ -327,13 +325,27 @@ async def send_notification(
         f"Цільовий курс: {threshold:.2f} UAH/USDT",
         f"Умова: {condition_text}",
         "",
-        f"Доступний обсяг: {total_available:.2f} USDT",
-        f"Ліміт угоди: {best_ad.min_single_trans_amount:.0f}–{best_ad.max_single_trans_amount:.0f} UAH",
-        f"Продавець оголошення: {best_ad.merchant_name}",
+        f"Доступний обсяг (сума по оголошеннях): {total_available:.2f} USDT",
+        f"Ліміт угоди (краще оголошення): {best_ad.min_single_trans_amount:.0f}–{best_ad.max_single_trans_amount:.0f} UAH",
+        f"Продавець (краще оголошення): {best_ad.merchant_name}",
         f"Час виявлення: {datetime.utcnow().strftime('%H:%M:%S')}",
-        "",
-        "Відкрити Binance P2P: https://p2p.binance.com/uk-UA/trade/sell/USDT?fiat=UAH",
     ]
+
+    # Додаємо топ-3 оголошень
+    text_lines.append("")
+    text_lines.append("Топ оголошень:")
+    for idx, ad in enumerate(top_ads, start=1):
+        text_lines.append(
+            f"{idx}) {ad.price:.2f} UAH/USDT, "
+            f"ліміт {ad.min_single_trans_amount:.0f}–{ad.max_single_trans_amount:.0f} UAH, "
+            f"{ad.merchant_name}"
+        )
+
+    text_lines.append("")
+    text_lines.append(
+        "Відкрити Binance P2P: https://p2p.binance.com/uk-UA/trade/sell/USDT?fiat=UAH"
+    )
+
     text = "\n".join(text_lines)
 
     await bot.send_message(
