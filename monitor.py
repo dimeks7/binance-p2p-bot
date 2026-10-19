@@ -294,6 +294,12 @@ async def handle_trigger_logic(
 
 
 async def send_notification(
+    print(
+        f"[DEBUG] send_notification: trigger_id={trigger.id}, "
+        f"user_id={trigger.user_id}, bank={bank_display_name}, "
+        f"time={datetime.utcnow().isoformat(timespec='seconds')}"
+    )
+
     bot: Bot,
     trigger: TriggerContext,
     bank_display_name: str,
