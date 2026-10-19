@@ -140,7 +140,7 @@ def init_db():
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_notifications_trigger_time "
-            "ON notifications(trigger_id, created_at);"
+            "ON notifications(trigger_id, payment_method_id, created_at);"
         )
 
         # Історія цін

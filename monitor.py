@@ -41,7 +41,7 @@ class TriggerContext:
 
 
 async def monitor_worker(bot: Bot, worker_id: int, stop_event: asyncio.Event):
-    # Один воркер, періодично обробляє всі активні тригери
+    # Один воркер, перевіряє тригери раз на config.monitor_default_interval
     while not stop_event.is_set():
         try:
             await process_all_triggers(bot)
@@ -87,7 +87,7 @@ async def process_trigger(bot: Bot, trigger: TriggerContext):
     except BinanceAPIError:
         return
 
-    # Записуємо середній курс у історію
+    # Записати середній курс у історію
     if result.ads:
         avg_price = sum(a.price for a in result.ads) / len(result.ads)
         log_price_history(
@@ -97,7 +97,7 @@ async def process_trigger(bot: Bot, trigger: TriggerContext):
             checked_ads=result.checked,
         )
 
-    # Групуємо оголошення за payType
+    # Групування оголошень за payType
     ads_by_bank: Dict[str, List] = {}
     for ad in result.ads:
         for pt in ad.payment_types:
@@ -113,7 +113,7 @@ async def process_trigger(bot: Bot, trigger: TriggerContext):
         if not bank_ads:
             continue
 
-        # ФІЛЬТР: ліміти угоди й сума (за потреби)
+        # Фільтр за лімітами угоди (мін/макс)
         filtered_ads: List = []
         for ad in bank_ads:
             if (
@@ -165,13 +165,13 @@ async def handle_trigger_logic(
     previous_price: Optional[float],
     ads: List,
 ):
-    # Глобальні налаштування сповіщень
+    # Перевірка глобальних налаштувань сповіщень
     settings = get_user_settings(trigger.user_id)
     if not settings.get("notifications_enabled", 1):
         set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
         return
 
-    # Анти-дубль: по trigger_id + bank (payment_method)
+    # Жорсткий анти-дубль: заборона двох сповіщень по одному тригеру+банку частіше, ніж раз на 10 секунд
     MIN_NOTIFY_INTERVAL_SEC = 10
     last_ntf_bank = get_last_notification_time_for_bank(trigger.id, pm_id)
     if last_ntf_bank:
@@ -192,7 +192,7 @@ async def handle_trigger_logic(
             set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
             return
 
-        # Додатковий інтервал для постійного режиму
+        # Додатково враховуємо repeat_interval_sec, якщо він заданий
         if trigger.repeat_enabled and trigger.repeat_interval_sec:
             last_ntf_bank = get_last_notification_time_for_bank(trigger.id, pm_id)
             if last_ntf_bank:
@@ -291,7 +291,7 @@ async def send_notification(
     threshold: float,
     ads: List,
 ):
-    # Сортуємо список оголошень по ціні (залежно від умови)
+    # Сортуємо оголошення за ціною
     if trigger.condition_type in ("ge", "cross_up"):
         sorted_ads = sorted(ads, key=lambda a: a.price, reverse=True)
     else:
@@ -299,7 +299,7 @@ async def send_notification(
 
     best_ad = sorted_ads[0]
     current_price = best_ad.price
-    top_ads = sorted_ads[:3]  # топ-3 оголошень
+    top_ads = sorted_ads[:3]
 
     total_available = sum(a.available_amount for a in ads)
 
