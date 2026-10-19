@@ -416,6 +416,23 @@ def get_last_notification_time(trigger_id: int) -> Optional[str]:
         return row["created_at"] if row else None
 
 
+def get_last_notification_time_for_bank(trigger_id: int, payment_method_id: int) -> Optional[str]:
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT created_at
+            FROM notifications
+            WHERE trigger_id=? AND payment_method_id=?
+            ORDER BY created_at DESC
+            LIMIT 1;
+            """,
+            (trigger_id, payment_method_id),
+        )
+        row = cur.fetchone()
+        return row["created_at"] if row else None
+
+
 def log_price_history(
     payment_method_id: int | None, price: float, total_ads: int, checked_ads: int
 ) -> None:
