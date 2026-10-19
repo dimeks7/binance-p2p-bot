@@ -111,21 +111,14 @@ async def show_main_menu(message: Message):
 
 
 async def show_triggers_list(message: Message):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE chat_id=?;", (message.chat.id,))
-        row = cur.fetchone()
-        if not row:
-            await message.answer("Користувача не знайдено.")
-            return
-        user_id = row["id"]
+    user_id = get_or_create_user(
+        chat_id=message.chat.id,
+        username=message.from_user.username if message.from_user else None,
+        first_name=message.from_user.first_name if message.from_user else None,
+        last_name=message.from_user.last_name if message.from_user and message.from_user.last_name else None,
+    )
 
-        cur.execute(
-            "SELECT * FROM triggers WHERE user_id=? ORDER BY created_at DESC;",
-            (user_id,),
-        )
-        triggers = cur.fetchall()
-
+    triggers = get_user_triggers(user_id)
     if not triggers:
         await message.answer("У вас ще немає тригерів.")
         return
@@ -143,28 +136,19 @@ async def show_triggers_list(message: Message):
             f"Статус: {status}\n"
         )
 
-        # Кнопки керування
         buttons = []
-        # Пауза / відновлення
         if status == "active":
             buttons.append(
                 InlineKeyboardButton(
                     text="⏸ Призупинити", callback_data=f"trg_pause_{trigger_id}"
                 )
             )
-        elif status == "paused":
+        elif status in ("paused", "done"):
             buttons.append(
                 InlineKeyboardButton(
                     text="▶️ Відновити", callback_data=f"trg_resume_{trigger_id}"
                 )
             )
-        elif status == "done":
-            buttons.append(
-                InlineKeyboardButton(
-                    text="▶️ Активувати знову", callback_data=f"trg_resume_{trigger_id}"
-                )
-            )
-        # Видалення
         buttons.append(
             InlineKeyboardButton(
                 text="🗑 Видалити", callback_data=f"trg_delete_{trigger_id}"
@@ -215,15 +199,12 @@ async def show_banks_menu(message: Message):
 
 
 async def show_settings_menu(message: Message):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE chat_id=?;", (message.chat.id,))
-        row = cur.fetchone()
-        if not row:
-            await message.answer("Користувача не знайдено.")
-            return
-        user_id = row["id"]
-
+    user_id = get_or_create_user(
+        chat_id=message.chat.id,
+        username=message.from_user.username if message.from_user else None,
+        first_name=message.from_user.first_name if message.from_user else None,
+        last_name=message.from_user.last_name if message.from_user and message.from_user.last_name else None,
+    )
     settings = get_user_settings(user_id)
 
     notif_status = "Увімкнені" if settings["notifications_enabled"] else "Вимкнені"
@@ -444,7 +425,7 @@ async def cb_menu_triggers(call: CallbackQuery):
     await call.answer()
 
 
-# --- КЕРУВАННЯ ТРИГЕРАМИ: ПАУЗА / ВІДНОВЛЕННЯ / ВИДАЛЕННЯ --- #
+# --- КЕРУВАННЯ ТРИГЕРАМИ --- #
 @dp.callback_query(F.data.startswith("trg_pause_"))
 async def cb_trg_pause(call: CallbackQuery):
     try:
@@ -511,15 +492,15 @@ async def cmd_deltrigger(message: Message):
         await message.answer("ID тригера має бути числом. Приклад: /deltrigger 1")
         return
 
+    user_id = get_or_create_user(
+        chat_id=message.chat.id,
+        username=message.from_user.username if message.from_user else None,
+        first_name=message.from_user.first_name if message.from_user else None,
+        last_name=message.from_user.last_name if message.from_user and message.from_user.last_name else None,
+    )
+
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE chat_id=?;", (message.chat.id,))
-        row = cur.fetchone()
-        if not row:
-            await message.answer("Користувача не знайдено.")
-            return
-        user_id = row["id"]
-
         cur.execute(
             "SELECT id, name FROM triggers WHERE id=? AND user_id=?;",
             (trigger_id, user_id),
@@ -544,14 +525,12 @@ async def cb_menu_settings(call: CallbackQuery):
 
 @dp.callback_query(F.data == "toggle_notifications")
 async def cb_toggle_notifications(call: CallbackQuery):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE chat_id=?;", (call.message.chat.id,))
-        row = cur.fetchone()
-        if not row:
-            await call.answer("Користувача не знайдено.", show_alert=True)
-            return
-        user_id = row["id"]
+    user_id = get_or_create_user(
+        chat_id=call.message.chat.id,
+        username=call.from_user.username if call.from_user else None,
+        first_name=call.from_user.first_name if call.from_user else None,
+        last_name=call.from_user.last_name if call.from_user and call.from_user.last_name else None,
+    )
 
     settings = get_user_settings(user_id)
     current = settings["notifications_enabled"]
@@ -583,15 +562,12 @@ async def msg_set_def_interval(message: Message, state: FSMContext):
         await message.answer("Введіть ціле число в секундах (0, 30, 60, 120, 300, ...).")
         return
 
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE chat_id=?;", (message.chat.id,))
-        row = cur.fetchone()
-        if not row:
-            await message.answer("Користувача не знайдено.")
-            await state.clear()
-            return
-        user_id = row["id"]
+    user_id = get_or_create_user(
+        chat_id=message.chat.id,
+        username=message.from_user.username if message.from_user else None,
+        first_name=message.from_user.first_name if message.from_user else None,
+        last_name=message.from_user.last_name if message.from_user and message.from_user.last_name else None,
+    )
 
     if value <= 0:
         set_user_settings(user_id, default_monitor_interval=None)
@@ -621,15 +597,12 @@ async def msg_set_history_days(message: Message, state: FSMContext):
         await message.answer("Введіть ціле число (0, 1, 3, 7, 30, ...).")
         return
 
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE chat_id=?;", (message.chat.id,))
-        row = cur.fetchone()
-        if not row:
-            await message.answer("Користувача не знайдено.")
-            await state.clear()
-            return
-        user_id = row["id"]
+    user_id = get_or_create_user(
+        chat_id=message.chat.id,
+        username=message.from_user.username if message.from_user else None,
+        first_name=message.from_user.first_name if message.from_user else None,
+        last_name=message.from_user.last_name if message.from_user and message.from_user.last_name else None,
+    )
 
     if value <= 0:
         set_user_settings(user_id, history_days=None)
@@ -643,7 +616,7 @@ async def msg_set_history_days(message: Message, state: FSMContext):
     await state.clear()
 
 
-# --- СТВОРЕННЯ ТРИГЕРА (INLINE/REPLY) --- #
+# --- СТВОРЕННЯ ТРИГЕРА --- #
 @dp.callback_query(F.data == "menu_create_trigger")
 async def cb_menu_create_trigger(call: CallbackQuery, state: FSMContext):
     await cb_menu_create_trigger_from_message(call.message, state)
@@ -1006,15 +979,12 @@ async def cb_repeat_interval(call: CallbackQuery, state: FSMContext):
 async def finalize_trigger(message: Message, state: FSMContext):
     data = await state.get_data()
 
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE chat_id=?;", (message.chat.id,))
-        row = cur.fetchone()
-        if not row:
-            await message.answer("Помилка: користувача не знайдено.")
-            await state.clear()
-            return
-        user_id = row["id"]
+    user_id = get_or_create_user(
+        chat_id=message.chat.id,
+        username=message.from_user.username if message.from_user else None,
+        first_name=message.from_user.first_name if message.from_user else None,
+        last_name=message.from_user.last_name if message.from_user and message.from_user.last_name else None,
+    )
 
     pms = {pm["id"]: pm for pm in get_payment_methods()}
     selected_banks = data.get("selected_banks", set())
@@ -1081,7 +1051,6 @@ async def cb_menu_stats(call: CallbackQuery):
 # --- АДМІН-МЕНЮ --- #
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
-    # Доступ тільки для ADMIN_IDS
     if message.chat.id not in config.admin_ids:
         await message.answer("Доступ заборонено.")
         return
