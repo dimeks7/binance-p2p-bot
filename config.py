@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# Завантаження .env
+# Локальний .env (корисно при запуску на своєму ПК)
 env_path = BASE_DIR / ".env"
 if env_path.exists():
     load_dotenv(env_path)
@@ -28,9 +28,13 @@ class Config:
 
 
 def load_config() -> Config:
+    # Читаємо BOT_TOKEN тільки з ENV (dotenv вже міг його підставити локально)
     bot_token = os.getenv("BOT_TOKEN", "").strip()
     if not bot_token:
-        raise RuntimeError("BOT_TOKEN не задано у файлі .env")
+        raise RuntimeError(
+            "BOT_TOKEN не задано в змінних середовища (ENV). "
+            "На локальній машині задайте його в .env, а на сервері — в Environment/Variables."
+        )
 
     admin_ids_raw = os.getenv("ADMIN_IDS", "").strip()
     admin_ids: list[int] = []
