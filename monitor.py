@@ -1,7 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from aiogram import Bot
 
@@ -10,7 +10,6 @@ from config import load_config
 from database import (
     get_conn,
     get_trigger_banks,
-    get_last_notification_time_for_bank,
     log_notification,
     log_price_history,
     set_trigger_bank_previous_price,
@@ -20,6 +19,10 @@ from database import (
 
 config = load_config()
 binance_client = BinanceP2PClient()
+
+# Кеш останніх сповіщень у пам'яті:
+# ключ: (trigger_id, payment_method_id), значення: datetime останнього сповіщення
+_last_notifications_cache: Dict[Tuple[int, int], datetime] = {}
 
 
 @dataclass
@@ -171,14 +174,15 @@ async def handle_trigger_logic(
         set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
         return
 
-    # Жорсткий анти-дубль: заборона двох сповіщень по одному тригеру+банку частіше, ніж раз на 10 секунд
+    key = (trigger.id, pm_id)
+    now = datetime.utcnow()
+
+    # Жорсткий анти-дубль: не більше одного сповіщення по trigger+bank раз на 10 секунд
     MIN_NOTIFY_INTERVAL_SEC = 10
-    last_ntf_bank = get_last_notification_time_for_bank(trigger.id, pm_id)
-    if last_ntf_bank:
-        last_dt_bank = datetime.fromisoformat(last_ntf_bank)
-        if datetime.utcnow() - last_dt_bank < timedelta(seconds=MIN_NOTIFY_INTERVAL_SEC):
-            set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
-            return
+    last_time = _last_notifications_cache.get(key)
+    if last_time and now - last_time < timedelta(seconds=MIN_NOTIFY_INTERVAL_SEC):
+        set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
+        return
 
     # Режим: постійний
     if trigger.mode == "continuous":
@@ -192,16 +196,13 @@ async def handle_trigger_logic(
             set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
             return
 
-        # Додатково враховуємо repeat_interval_sec, якщо він заданий
+        # repeat_interval_sec (додатковий антиспам)
         if trigger.repeat_enabled and trigger.repeat_interval_sec:
-            last_ntf_bank = get_last_notification_time_for_bank(trigger.id, pm_id)
-            if last_ntf_bank:
-                last_dt_bank = datetime.fromisoformat(last_ntf_bank)
-                if datetime.utcnow() - last_dt_bank < timedelta(
-                    seconds=trigger.repeat_interval_sec
-                ):
-                    set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
-                    return
+            if last_time and now - last_time < timedelta(
+                seconds=trigger.repeat_interval_sec
+            ):
+                set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
+                return
 
         await send_notification(
             bot=bot,
@@ -216,6 +217,7 @@ async def handle_trigger_logic(
             price=current_price,
             condition_type=trigger.condition_type,
         )
+        _last_notifications_cache[key] = now
         set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
 
     # Режим: перетин
@@ -249,6 +251,7 @@ async def handle_trigger_logic(
             price=current_price,
             condition_type=trigger.condition_type,
         )
+        _last_notifications_cache[key] = now
         set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
 
     # Режим: разовий
@@ -267,6 +270,11 @@ async def handle_trigger_logic(
             set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
             return
 
+        # Для разового режиму анти-дубль теж працює через кеш
+        if last_time and now - last_time < timedelta(seconds=MIN_NOTIFY_INTERVAL_SEC):
+            set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
+            return
+
         await send_notification(
             bot=bot,
             trigger=trigger,
@@ -280,6 +288,7 @@ async def handle_trigger_logic(
             price=current_price,
             condition_type=trigger.condition_type,
         )
+        _last_notifications_cache[key] = now
         set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
         update_trigger(trigger.id, status="done")
 
