@@ -53,7 +53,7 @@ def load_config() -> Config:
     binance_timeout = float(os.getenv("BINANCE_TIMEOUT", "10"))
     binance_max_retries = int(os.getenv("BINANCE_MAX_RETRIES", "3"))
     binance_max_pages = int(os.getenv("BINANCE_MAX_PAGES", "5"))
-    monitor_worker_count = int(os.getenv("MONITOR_WORKER_COUNT", "4"))
+    monitor_worker_count = int(os.getenv("MONITOR_WORKER_COUNT", "1"))
     monitor_default_interval = int(os.getenv("MONITOR_DEFAULT_INTERVAL", "60"))
     history_retention_days = int(os.getenv("HISTORY_RETENTION_DAYS", "7"))
 

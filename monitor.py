@@ -1,6 +1,6 @@
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from aiogram import Bot
@@ -19,6 +19,10 @@ from database import (
 
 config = load_config()
 binance_client = BinanceP2PClient()
+
+# Кеш останніх відправлених сповіщень для кожного користувача:
+# user_id -> останній текст сповіщення
+_last_notifications: Dict[int, str] = {}
 
 
 @dataclass
@@ -182,12 +186,7 @@ async def handle_trigger_logic(
             set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
             return
 
-        # Додатковий інтервал повторних сповіщень, якщо заданий
-        if trigger.repeat_enabled and trigger.repeat_interval_sec:
-            # тут можна використовувати логіку з БД (get_last_notification_time_for_bank),
-            # але поки залишимо тільки repeat_interval_sec у межах одного процесу моніторингу
-            pass
-
+        # TODO: реалізувати repeat_interval_sec через БД, якщо потрібно
         await send_notification(
             bot=bot,
             trigger=trigger,
@@ -337,6 +336,14 @@ async def send_notification(
     )
 
     text = "\n".join(text_lines)
+
+    # --- Фільтр дублікатів: не надсилати однаковий текст одному й тому ж юзеру двічі підряд ---
+    global _last_notifications
+    last_text = _last_notifications.get(trigger.user_id)
+    if last_text == text:
+        return  # Такий самий текст уже щойно відправляли цьому користувачу
+    _last_notifications[trigger.user_id] = text
+    # -------------------------------------------------------------------------------------------
 
     await bot.send_message(
         chat_id=chat_id,
