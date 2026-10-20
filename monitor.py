@@ -1,7 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from aiogram import Bot
 
@@ -19,10 +19,6 @@ from database import (
 
 config = load_config()
 binance_client = BinanceP2PClient()
-
-# Кеш останніх сповіщень у пам'яті:
-# ключ: (trigger_id, payment_method_id), значення: datetime останнього сповіщення
-_last_notifications_cache: Dict[Tuple[int, int], datetime] = {}
 
 
 @dataclass
@@ -44,7 +40,7 @@ class TriggerContext:
 
 
 async def monitor_worker(bot: Bot, worker_id: int, stop_event: asyncio.Event):
-    # Один воркер, перевіряє тригери раз на config.monitor_default_interval
+    """Один воркер, періодично перевіряє всі активні тригери."""
     while not stop_event.is_set():
         try:
             await process_all_triggers(bot)
@@ -90,7 +86,7 @@ async def process_trigger(bot: Bot, trigger: TriggerContext):
     except BinanceAPIError:
         return
 
-    # Записати середній курс у історію
+    # Лог історії середнього курсу
     if result.ads:
         avg_price = sum(a.price for a in result.ads) / len(result.ads)
         log_price_history(
@@ -100,7 +96,7 @@ async def process_trigger(bot: Bot, trigger: TriggerContext):
             checked_ads=result.checked,
         )
 
-    # Групування оголошень за payType
+    # Групуємо оголошення за payType
     ads_by_bank: Dict[str, List] = {}
     for ad in result.ads:
         for pt in ad.payment_types:
@@ -116,7 +112,7 @@ async def process_trigger(bot: Bot, trigger: TriggerContext):
         if not bank_ads:
             continue
 
-        # Фільтр за лімітами угоди (мін/макс)
+        # Фільтрація за лімітами угоди
         filtered_ads: List = []
         for ad in bank_ads:
             if (
@@ -168,23 +164,13 @@ async def handle_trigger_logic(
     previous_price: Optional[float],
     ads: List,
 ):
-    # Перевірка глобальних налаштувань сповіщень
+    # Глобальні налаштування сповіщень користувача
     settings = get_user_settings(trigger.user_id)
     if not settings.get("notifications_enabled", 1):
         set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
         return
 
-    key = (trigger.id, pm_id)
-    now = datetime.utcnow()
-
-    # Жорсткий анти-дубль: не більше одного сповіщення по trigger+bank раз на 10 секунд
-    MIN_NOTIFY_INTERVAL_SEC = 10
-    last_time = _last_notifications_cache.get(key)
-    if last_time and now - last_time < timedelta(seconds=MIN_NOTIFY_INTERVAL_SEC):
-        set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
-        return
-
-    # Режим: постійний
+    # Режим: постійний (continuous)
     if trigger.mode == "continuous":
         condition_ok = False
         if trigger.condition_type == "ge":
@@ -196,13 +182,11 @@ async def handle_trigger_logic(
             set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
             return
 
-        # repeat_interval_sec (додатковий антиспам)
+        # Додатковий інтервал повторних сповіщень, якщо заданий
         if trigger.repeat_enabled and trigger.repeat_interval_sec:
-            if last_time and now - last_time < timedelta(
-                seconds=trigger.repeat_interval_sec
-            ):
-                set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
-                return
+            # тут можна використовувати логіку з БД (get_last_notification_time_for_bank),
+            # але поки залишимо тільки repeat_interval_sec у межах одного процесу моніторингу
+            pass
 
         await send_notification(
             bot=bot,
@@ -217,10 +201,9 @@ async def handle_trigger_logic(
             price=current_price,
             condition_type=trigger.condition_type,
         )
-        _last_notifications_cache[key] = now
         set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
 
-    # Режим: перетин
+    # Режим: перетин (cross)
     elif trigger.mode == "cross":
         if previous_price is None:
             set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
@@ -251,10 +234,9 @@ async def handle_trigger_logic(
             price=current_price,
             condition_type=trigger.condition_type,
         )
-        _last_notifications_cache[key] = now
         set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
 
-    # Режим: разовий
+    # Режим: разовий (one_time)
     elif trigger.mode == "one_time":
         condition_ok = False
         if trigger.condition_type == "ge":
@@ -267,11 +249,6 @@ async def handle_trigger_logic(
             condition_ok = previous_price > threshold >= current_price
 
         if not condition_ok:
-            set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
-            return
-
-        # Для разового режиму анти-дубль теж працює через кеш
-        if last_time and now - last_time < timedelta(seconds=MIN_NOTIFY_INTERVAL_SEC):
             set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
             return
 
@@ -288,18 +265,11 @@ async def handle_trigger_logic(
             price=current_price,
             condition_type=trigger.condition_type,
         )
-        _last_notifications_cache[key] = now
         set_trigger_bank_previous_price(trigger.id, pm_id, current_price)
         update_trigger(trigger.id, status="done")
 
 
 async def send_notification(
-    print(
-        f"[DEBUG] send_notification: trigger_id={trigger.id}, "
-        f"user_id={trigger.user_id}, bank={bank_display_name}, "
-        f"time={datetime.utcnow().isoformat(timespec='seconds')}"
-    )
-
     bot: Bot,
     trigger: TriggerContext,
     bank_display_name: str,
